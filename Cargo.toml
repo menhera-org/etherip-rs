@@ -1,0 +1,26 @@
+[package]
+name = "etherip"
+version = "0.1.0"
+edition = "2021"
+
+authors = ["Menhera.org Developers"]
+description = "EtherIP implementation in Rust"
+license = "Apache-2.0 OR MPL-2.0"
+readme = "README.md"
+repository = "https://github.com/menhera-org/etherip-rs"
+homepage = "https://github.com/menhera-org/etherip-rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+tokio = { version = "1", features = ["full"] }
+tokio-tun = "0.11"
+parking_lot = "0.12"
+anyhow = "1.0"
+syslog = "^6.1"
+serde = { version = "^1.0", features = ["derive"] }
+toml = "^0.8"
+libc = "^0.2"
+futures = "0.3"
+crossbeam-channel = "0.5"
+nix = { version = "0.28", features = ["ioctl"] }
