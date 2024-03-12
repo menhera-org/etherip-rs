@@ -177,7 +177,13 @@ async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, ta
     }
     drop(len_setter);
 
-    etherip_socket.send_to(&datagram, &link_config.remote).await?;
+    match etherip_socket.send_to(&datagram, &link_config.remote).await {
+      Ok(_) => (),
+      Err(e) => {
+        log::warn!("Failed to send to EtherIP socket: {}", e);
+        continue;
+      }
+    }
   }
 }
 
@@ -202,7 +208,13 @@ async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_int
     match link_map.get(&src) {
       Some(link_name) => {
         let tap = tap_interfaces.get(link_name).ok_or_else(|| anyhow::anyhow!("Link {} does not exist", link_name))?;
-        tap.write(eth_frame).await?;
+        match tap.write(eth_frame).await {
+          Ok(_) => (),
+          Err(e) => {
+            log::warn!("Failed to write to TAP interface {}: {}", link_name, e);
+            continue;
+          }
+        }
       },
       None => {
         log::debug!("Received a packet from an unknown source IP address: {}", src);
