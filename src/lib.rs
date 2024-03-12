@@ -4,7 +4,6 @@
 pub use parking_lot;
 pub use anyhow;
 pub use tokio;
-pub use tokio_tun;
 pub use log;
 pub use clap;
 pub use syslog;
@@ -264,6 +263,9 @@ impl IpProtocol for EtherIp {
 
 /// EtherIP socket
 /// Large packets are fragmented by the kernel by default.
+/// There is no need to `split` the `IpSocket` into a reader and a writer,
+/// because it does not need to borrow self mutably to call `recv_from` and `send_to`.
+/// Just wrap it in `Arc` and clone it.
 #[derive(Debug)]
 pub struct EtherIpSocket {
   inner: IpSocket<EtherIp>,
@@ -278,6 +280,7 @@ impl EtherIpSocket {
     })
   }
 
+  /// Create a new EtherIP socket from a raw socket.
   pub fn from(socket: IpSocket<EtherIp>) -> Self {
     Self {
       inner: socket,

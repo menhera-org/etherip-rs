@@ -14,7 +14,6 @@ homepage = "https://github.com/menhera-org/etherip-rs"
 clap = { version = "4", features = ["derive"] }
 log = "0.4"
 tokio = { version = "1", features = ["full"] }
-tokio-tun = "0.11"
 parking_lot = "0.12"
 anyhow = "1.0"
 syslog = "^6.1"

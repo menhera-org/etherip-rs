@@ -13,8 +13,6 @@ use etherip::syslog;
 use etherip::anyhow;
 use etherip::parking_lot;
 use etherip::futures;
-use etherip::crossbeam_channel;
-use etherip::tokio_tun;
 
 use parking_lot::RwLock;
 
