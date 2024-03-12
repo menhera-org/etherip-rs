@@ -89,19 +89,18 @@ impl RawIpSocket {
   }
 
   fn bind_unspecified(&self) -> std::io::Result<()> {
-    let addr = libc::sockaddr_in6 {
-      sin6_family: libc::AF_INET6 as u16,
-      sin6_port: 0,
-      sin6_flowinfo: 0,
-      sin6_addr: libc::in6_addr {
-        s6_addr: [0; 16],
-      },
-      sin6_scope_id: 0,
+    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+    addr.sin6_family = libc::AF_INET6 as u16;
+    addr.sin6_port = 0;
+    addr.sin6_flowinfo = 0;
+    addr.sin6_addr = libc::in6_addr {
+      s6_addr: [0; 16],
     };
-    let addr = &addr as *const libc::sockaddr_in6 as *const libc::sockaddr;
+    addr.sin6_scope_id = 0;
+
     let addr_len = std::mem::size_of_val(&addr) as u32;
     unsafe {
-      if libc::bind(self.socket_fd, addr, addr_len) < 0 {
+      if libc::bind(self.socket_fd, &addr as *const libc::sockaddr_in6 as *const libc::sockaddr, addr_len) < 0 {
         return Err(Error::last_os_error());
       }
       Ok(())
