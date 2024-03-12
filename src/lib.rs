@@ -69,16 +69,39 @@ impl RawIpSocket {
     })
   }
 
+  /// NO-OP because it is not supported.
   fn set_mtu_discovery(&self, fragment_config: &FragmentConfig) -> std::io::Result<()> {
-    let option = match fragment_config {
-      FragmentConfig::Fragment => libc::IPV6_PMTUDISC_WANT,
-      FragmentConfig::NoFragment => libc::IPV6_PMTUDISC_DO,
-    };
-    let value = &option as *const libc::c_int as *const libc::c_void;
-    let len = std::mem::size_of_val(&option) as u32;
+    Ok(())
 
+    // let option = match fragment_config {
+    //   FragmentConfig::Fragment => libc::IPV6_PMTUDISC_WANT,
+    //   FragmentConfig::NoFragment => libc::IPV6_PMTUDISC_DO,
+    // };
+    // let value = &option as *const libc::c_int as *const libc::c_void;
+    // let len = std::mem::size_of_val(&option) as u32;
+
+    // unsafe {
+    //   if libc::setsockopt(self.socket_fd, libc::IPPROTO_IPV6, libc::IP_MTU_DISCOVER, value, len) < 0 {
+    //     return Err(Error::last_os_error());
+    //   }
+    //   Ok(())
+    // }
+  }
+
+  fn bind_unspecified(&self) -> std::io::Result<()> {
+    let addr = libc::sockaddr_in6 {
+      sin6_family: libc::AF_INET6 as u16,
+      sin6_port: 0,
+      sin6_flowinfo: 0,
+      sin6_addr: libc::in6_addr {
+        s6_addr: [0; 16],
+      },
+      sin6_scope_id: 0,
+    };
+    let addr = &addr as *const libc::sockaddr_in6 as *const libc::sockaddr;
+    let addr_len = std::mem::size_of_val(&addr) as u32;
     unsafe {
-      if libc::setsockopt(self.socket_fd, libc::IPPROTO_IPV6, libc::IP_MTU_DISCOVER, value, len) < 0 {
+      if libc::bind(self.socket_fd, addr, addr_len) < 0 {
         return Err(Error::last_os_error());
       }
       Ok(())
@@ -88,12 +111,14 @@ impl RawIpSocket {
   pub fn new(proto: libc::c_int) -> std::io::Result<Self> {
     let socket = Self::new_raw(proto)?;
     socket.set_mtu_discovery(&FragmentConfig::Fragment)?;
+    socket.bind_unspecified()?;
     Ok(socket)
   }
 
   pub fn new_with_fragment_config(proto: libc::c_int, fragment_config: FragmentConfig) -> std::io::Result<Self> {
     let socket = Self::new_raw(proto)?;
     socket.set_mtu_discovery(&fragment_config)?;
+    socket.bind_unspecified()?;
     Ok(socket)
   }
 
