@@ -50,7 +50,14 @@ async fn main() -> Result<(), anyhow::Error> {
   syslog::init(syslog::Facility::LOG_DAEMON, log::LevelFilter::Info, Some(APP_NAME)).map_err(|e| anyhow::anyhow!("{}", e))?;
   let args = Args::parse();
   let config_path = args.config;
-  let config = Arc::new(RwLock::new(load_config(&config_path).await?));
+  let config = match load_config(&config_path).await {
+    Ok(config) => config,
+    Err(e) => {
+      eprintln!("Invalid or nonexistent configuration: {}", config_path.display());
+      return Err(e);
+    }
+  };
+  let config = Arc::new(RwLock::new(config));
 
   let mut hup_stream = signal(SignalKind::hangup())?;
 
