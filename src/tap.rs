@@ -14,7 +14,7 @@ use tokio::io::unix::AsyncFd;
 pub const TUNSETIFF: libc::c_ulong = nix::request_code_write!(b'T', 202, std::mem::size_of::<libc::c_int>());
 pub const TUNSETPERSIST: libc::c_ulong = nix::request_code_write!(b'T', 203, std::mem::size_of::<libc::c_int>());
 
-pub const TUNDEV: *const i8 = "/dev/net/tun\0".as_ptr() as *const i8;
+pub const TUNDEV: *const libc::c_char = "/dev/net/tun\0".as_ptr() as *const libc::c_char;
 
 
 fn ifname_to_cstring(ifname: &str) -> std::io::Result<std::ffi::CString> {
