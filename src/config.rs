@@ -40,6 +40,11 @@ impl Config {
   pub fn level_filter(&self) -> LevelFilter {
     self.log_level.into()
   }
+
+  /// Get a map of remote IP addresses to link names.
+  pub fn link_map(&self) -> HashMap<std::net::IpAddr, String> {
+    self.links.iter().map(|(k, v)| (v.remote, k.clone())).collect()
+  }
 }
 
 /// Configuration for a link.
