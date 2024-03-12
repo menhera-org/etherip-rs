@@ -45,12 +45,8 @@ pub fn from_ipv6_addr(v6_addr: Ipv6Addr) -> IpAddr {
   }
 }
 
-// TODO: Implement AsyncRead and AsyncWrite directly for IpSocket. Also implement Drop for IpSocket, to close fd.
-
-/// Raw IPv4/IPv6 dualstack socket backed by AF_INET6.
-/// Large packets are fragmented by the kernel by default.
 #[derive(Debug)]
-pub struct IpSocket {
+pub struct RawIpSocket {
   socket_fd: libc::c_int,
 }
 
@@ -63,7 +59,7 @@ pub enum FragmentConfig {
   NoFragment,
 }
 
-impl IpSocket {
+impl RawIpSocket {
   fn new_raw(proto: libc::c_int) -> std::io::Result<Self> {
     let socket_fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_RAW | libc::SOCK_NONBLOCK, proto) };
     if socket_fd < 0 {
@@ -137,31 +133,74 @@ impl IpSocket {
     }
     Ok(n as usize)
   }
-
-  pub fn split(self) -> std::io::Result<(IpSocketReader, IpSocketWriter)> {
-    let socket_fd = self.socket_fd;
-    let reader = IpSocketReader::new(IpSocket { socket_fd })?;
-    let writer = IpSocketWriter::new(IpSocket { socket_fd })?;
-    Ok((reader, writer))
-  }
 }
 
-impl AsRawFd for IpSocket {
+impl AsRawFd for RawIpSocket {
   fn as_raw_fd(&self) -> libc::c_int {
     self.socket_fd
   }
 }
 
-#[derive(Debug)]
-pub struct IpSocketReader {
-  inner: AsyncFd<IpSocket>,
+impl Drop for RawIpSocket {
+  fn drop(&mut self) {
+    unsafe {
+      libc::close(self.socket_fd);
+    }
+  }
 }
 
-impl IpSocketReader {
-  fn new(socket: IpSocket) -> std::io::Result<Self> {
+pub trait IpProtocol {
+  fn protocol_number(&self) -> libc::c_int;
+}
+
+impl IpProtocol for libc::c_int {
+  fn protocol_number(&self) -> libc::c_int {
+    *self
+  }
+}
+
+impl IpProtocol for libc::c_uint {
+  fn protocol_number(&self) -> libc::c_int {
+    *self as libc::c_int
+  }
+}
+
+/// Raw IPv4/IPv6 dualstack socket backed by AF_INET6.
+/// Large packets are fragmented by the kernel by default.
+/// There is no need to `split` the `IpSocket` into a reader and a writer,
+/// because it does not need to borrow self mutably to call `recv_from` and `send_to`.
+/// Just wrap it in `Arc` and clone it.
+#[derive(Debug)]
+pub struct IpSocket<P>
+where
+  P: IpProtocol,
+{
+  inner: AsyncFd<RawIpSocket>,
+  protocol: P,
+}
+
+impl<P> IpSocket<P>
+where
+  P: IpProtocol,
+{
+  pub fn new(protocol: P) -> std::io::Result<Self> {
+    let socket = RawIpSocket::new(protocol.protocol_number())?;
     Ok(Self {
-      inner: AsyncFd::with_interest(socket, Interest::READABLE)?,
+      inner: AsyncFd::with_interest(socket, Interest::READABLE | Interest::WRITABLE)?,
+      protocol,
     })
+  }
+
+  pub fn new_with_fragment_config(protocol: P, fragment_config: FragmentConfig) -> std::io::Result<Self> {
+    let socket = RawIpSocket::new_with_fragment_config(protocol.protocol_number(), fragment_config)?;
+    Ok(Self {
+      inner: AsyncFd::with_interest(socket, Interest::READABLE | Interest::WRITABLE)?,
+      protocol,
+    })
+  }
+
+  pub fn protocol(&self) -> libc::c_int {
+    self.protocol.protocol_number()
   }
 
   async fn recv_from_raw(&self, buf: &mut [u8]) -> std::io::Result<(usize, libc::sockaddr_in6)> {
@@ -182,19 +221,6 @@ impl IpSocketReader {
   pub async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, IpAddr)> {
     let (n, addr) = self.recv_from_ipv6(buf).await?;
     Ok((n, from_ipv6_addr(addr)))
-  }
-}
-
-#[derive(Debug)]
-pub struct IpSocketWriter {
-  inner: AsyncFd<IpSocket>,
-}
-
-impl IpSocketWriter {
-  fn new(socket: IpSocket) -> std::io::Result<Self> {
-    Ok(Self {
-      inner: AsyncFd::with_interest(socket, Interest::WRITABLE)?,
-    })
   }
 
   async fn send_to_raw(&self, buf: &[u8], addr: &libc::sockaddr_in6) -> std::io::Result<usize> {
@@ -226,11 +252,54 @@ impl IpSocketWriter {
   }
 }
 
-pub fn encode_etherip_frame(eth_frame: &[u8]) -> Vec<u8> {
-  let mut buf = Vec::with_capacity(eth_frame.len() + 2);
-  buf.extend_from_slice(&[0b0011_0000, 0b0000_0000]); // EtherIP header
-  buf.extend_from_slice(eth_frame); // Ethernet frame
-  buf
+/// EtherIP protocol
+#[derive(Debug)]
+pub struct EtherIp ();
+
+impl IpProtocol for EtherIp {
+  fn protocol_number(&self) -> libc::c_int {
+    PROTO_ETHERIP
+  }
+}
+
+/// EtherIP socket
+/// Large packets are fragmented by the kernel by default.
+#[derive(Debug)]
+pub struct EtherIpSocket {
+  inner: IpSocket<EtherIp>,
+}
+
+impl EtherIpSocket {
+  /// Create a new EtherIP socket.
+  pub fn new() -> std::io::Result<Self> {
+    let inner = IpSocket::new(EtherIp ())?;
+    Ok(Self {
+      inner,
+    })
+  }
+
+  pub fn from(socket: IpSocket<EtherIp>) -> Self {
+    Self {
+      inner: socket,
+    }
+  }
+
+  /// Receive an EtherIP Datagram.
+  pub async fn recv_from(&self, datagram: &mut EtherIpDatagram) -> std::io::Result<(usize, IpAddr)> {
+    let (n, src_addr) = self.inner.recv_from(&mut datagram.data).await?;
+    datagram.len = n;
+    Ok((n, src_addr))
+  }
+
+  /// Send an EtherIP Datagram.
+  pub async fn send_to(&self, datagram: &EtherIpDatagram, dst_addr: &IpAddr) -> std::io::Result<usize> {
+    let data = if let Some(data) = datagram.datagram() {
+      data
+    } else {
+      return Err(Error::new(ErrorKind::InvalidData, "Invalid EtherIP Datagram"));
+    };
+    self.inner.send_to(data, dst_addr).await
+  }
 }
 
 /// EtherIP Datagram (excluding IP header)
@@ -324,75 +393,5 @@ impl EtherIpDatagramLength<'_> {
 
   pub fn get(&self) -> usize {
     *self.etherip_datagram_len
-  }
-}
-
-/// EtherIP socket
-/// Large packets are fragmented by the kernel by default.
-#[derive(Debug)]
-pub struct EtherIpSocket {
-  socket: IpSocket,
-}
-
-impl EtherIpSocket {
-  /// Create a new EtherIP socket.
-  pub fn new() -> std::io::Result<Self> {
-    let socket = IpSocket::new(PROTO_ETHERIP)?;
-    Ok(Self {
-      socket,
-    })
-  }
-
-  /// Create a new EtherIP socket with Path MTU Discovery (PMTUD) configuration.
-  pub fn new_with_fragment_config(fragment_config: FragmentConfig) -> std::io::Result<Self> {
-    let socket = IpSocket::new_with_fragment_config(PROTO_ETHERIP, fragment_config)?;
-    Ok(Self {
-      socket,
-    })
-  }
-
-  /// Split the EtherIP socket into a receiver and a sender.
-  pub fn split(self) -> std::io::Result<(EtherIpDatagramReceiver, EtherIpDatagramSender)> {
-    let (reader, writer) = self.socket.split()?;
-    let reader = EtherIpDatagramReceiver {
-      socket: reader,
-    };
-    let writer = EtherIpDatagramSender {
-      socket: writer,
-    };
-    Ok((reader, writer))
-  }
-}
-
-/// EtherIP Datagram receiver
-#[derive(Debug)]
-pub struct EtherIpDatagramReceiver {
-  socket: IpSocketReader,
-}
-
-impl EtherIpDatagramReceiver {
-  /// Receive an EtherIP Datagram.
-  pub async fn recv_from(&self, datagram: &mut EtherIpDatagram) -> std::io::Result<(usize, IpAddr)> {
-    let (n, src_addr) = self.socket.recv_from(&mut datagram.data).await?;
-    datagram.len = n;
-    Ok((n, src_addr))
-  }
-}
-
-/// EtherIP Datagram sender
-#[derive(Debug)]
-pub struct EtherIpDatagramSender {
-  socket: IpSocketWriter,
-}
-
-impl EtherIpDatagramSender {
-  /// Send an EtherIP Datagram.
-  pub async fn send_to(&self, datagram: &EtherIpDatagram, dst_addr: &IpAddr) -> std::io::Result<usize> {
-    let data = if let Some(data) = datagram.datagram() {
-      data
-    } else {
-      return Err(Error::new(ErrorKind::InvalidData, "Invalid EtherIP Datagram"));
-    };
-    self.socket.send_to(data, dst_addr).await
   }
 }
