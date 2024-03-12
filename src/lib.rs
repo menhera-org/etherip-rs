@@ -70,7 +70,7 @@ impl RawIpSocket {
   }
 
   /// NO-OP because it is not supported.
-  fn set_mtu_discovery(&self, fragment_config: &FragmentConfig) -> std::io::Result<()> {
+  fn set_mtu_discovery(&self, _fragment_config: &FragmentConfig) -> std::io::Result<()> {
     Ok(())
 
     // let option = match fragment_config {
