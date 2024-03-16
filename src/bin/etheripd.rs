@@ -184,7 +184,7 @@ async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, ta
     if let Some(remote_addr) = remote_addr.try_get_ip_addr() {
       let etherip_socket = etherip_socket.clone();
       let datagram = datagram.clone();
-      tokio::task::spawn_local(async move {
+      tokio::spawn(async move {
         let _ = etherip_socket.send_to(&datagram, &remote_addr).await;
       });
     } else {
@@ -219,7 +219,7 @@ async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_int
         let tap = tap_interfaces.get(link_name).ok_or_else(|| anyhow::anyhow!("Link {} does not exist", link_name))?;
         let tap = tap.clone();
         let eth_frame = eth_frame.to_vec();
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
           let _ = tap.write(&eth_frame).await;
         });
       },
