@@ -122,7 +122,7 @@ pub async fn lookup_addr(addr: &str, ip_version: IpVersion) -> std::io::Result<s
     return Ok(ip);
   }
 
-  let addrs = tokio::net::lookup_host(addr).await?;
+  let addrs = tokio::net::lookup_host(format!("{}:0", addr)).await?;
   for addr in addrs {
     match ip_version {
       IpVersion::V4 => {
