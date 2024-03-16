@@ -100,8 +100,10 @@ async fn main() -> Result<(), anyhow::Error> {
     log::set_max_level(config.level_filter());
 
     let links = config.links.clone();
-    let link_map = config.link_map();
+    let mut link_map = config.link_map();
     drop(config);
+
+    let _ = link_map.update().await;
 
     {
       let mut tap_interfaces = tap_interfaces.write();
@@ -166,7 +168,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
 async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, tap: Arc<tap::Tap>, etherip_socket: Arc<EtherIpSocket>) -> Result<(), anyhow::Error> {
   let mut datagram = EtherIpDatagram::new();
+  let mut remote_addr = link_config.remote_addr();
   loop {
+    let _ = remote_addr.update_ip_addr().await;
     let (mut len_setter, mut buf) = datagram.ethrnet_frame_mut();
     match tap.read(&mut buf).await {
       Ok(len) => len_setter.set(len),
@@ -177,19 +181,24 @@ async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, ta
     }
     drop(len_setter);
 
-    match etherip_socket.send_to(&datagram, &link_config.remote).await {
-      Ok(_) => (),
-      Err(e) => {
-        log::warn!("Failed to send to EtherIP socket: {}", e);
-        continue;
-      }
+    if let Some(remote_addr) = remote_addr.try_get_ip_addr() {
+      let etherip_socket = etherip_socket.clone();
+      let datagram = datagram.clone();
+      tokio::task::spawn_local(async move {
+        let _ = etherip_socket.send_to(&datagram, &remote_addr).await;
+      });
+    } else {
+      log::debug!("Sending a packet to an unknown remote address");
+      continue;
     }
   }
 }
 
-async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_interfaces: HashMap<String, Arc<tap::Tap>>, link_map: HashMap<std::net::IpAddr, String>) -> Result<(), anyhow::Error> {
+async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_interfaces: HashMap<String, Arc<tap::Tap>>, mut link_map: config::AddrStringMap<String>) -> Result<(), anyhow::Error> {
   let mut datagram = EtherIpDatagram::new();
   loop {
+    let _ = link_map.update().await;
+
     let src = match etherip_socket.recv_from(&mut datagram).await {
       Ok((_, src)) => src,
       Err(e) => {
@@ -208,13 +217,11 @@ async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_int
     match link_map.get(&src) {
       Some(link_name) => {
         let tap = tap_interfaces.get(link_name).ok_or_else(|| anyhow::anyhow!("Link {} does not exist", link_name))?;
-        match tap.write(eth_frame).await {
-          Ok(_) => (),
-          Err(e) => {
-            log::warn!("Failed to write to TAP interface {}: {}", link_name, e);
-            continue;
-          }
-        }
+        let tap = tap.clone();
+        let eth_frame = eth_frame.to_vec();
+        tokio::task::spawn_local(async move {
+          let _ = tap.write(&eth_frame).await;
+        });
       },
       None => {
         log::debug!("Received a packet from an unknown source IP address: {}", src);
