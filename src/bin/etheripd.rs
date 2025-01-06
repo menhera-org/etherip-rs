@@ -182,7 +182,6 @@ async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, ta
     drop(len_setter);
 
     if let Some(remote_addr) = remote_addr.try_get_ip_addr() {
-      let etherip_socket = etherip_socket.clone();
       let _ = etherip_socket.send_to(&datagram, &remote_addr).await;
     } else {
       log::debug!("Sending a packet to an unknown remote address");
@@ -214,7 +213,6 @@ async fn receive_from_etherip_socket(etherip_socket: Arc<EtherIpSocket>, tap_int
     match link_map.get(&src) {
       Some(link_name) => {
         let tap = tap_interfaces.get(link_name).ok_or_else(|| anyhow::anyhow!("Link {} does not exist", link_name))?;
-        let tap = tap.clone();
         let _ = tap.write(eth_frame).await;
       },
       None => {

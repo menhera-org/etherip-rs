@@ -350,7 +350,7 @@ impl EtherIpDatagram {
   }
 
   /// Validate the EtherIP Datagram and get a reference to the encapsulated Ethernet frame.
-  pub fn ethrnet_frame<'a>(&'a self) -> Option<&[u8]> {
+  pub fn ethrnet_frame<'a>(&'a self) -> Option<&'a [u8]> {
     if self.len > self.data.len() {
       return None;
     }
