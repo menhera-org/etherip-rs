@@ -69,23 +69,20 @@ impl RawIpSocket {
     })
   }
 
-  /// NO-OP because it is not supported.
-  fn set_mtu_discovery(&self, _fragment_config: &FragmentConfig) -> std::io::Result<()> {
-    Ok(())
+  fn set_mtu_discovery(&self, fragment_config: &FragmentConfig) -> std::io::Result<()> {
+    let option = match fragment_config {
+      FragmentConfig::Fragment => libc::IPV6_PMTUDISC_OMIT,
+      FragmentConfig::NoFragment => libc::IPV6_PMTUDISC_DO,
+    };
+    let value = &option as *const libc::c_int as *const libc::c_void;
+    let len = std::mem::size_of_val(&option) as u32;
 
-    // let option = match fragment_config {
-    //   FragmentConfig::Fragment => libc::IPV6_PMTUDISC_WANT,
-    //   FragmentConfig::NoFragment => libc::IPV6_PMTUDISC_DO,
-    // };
-    // let value = &option as *const libc::c_int as *const libc::c_void;
-    // let len = std::mem::size_of_val(&option) as u32;
-
-    // unsafe {
-    //   if libc::setsockopt(self.socket_fd, libc::IPPROTO_IPV6, libc::IP_MTU_DISCOVER, value, len) < 0 {
-    //     return Err(Error::last_os_error());
-    //   }
-    //   Ok(())
-    // }
+    unsafe {
+      if libc::setsockopt(self.socket_fd, libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, value, len) < 0 {
+        return Err(Error::last_os_error());
+      }
+      Ok(())
+    }
   }
 
   fn bind_unspecified(&self) -> std::io::Result<()> {
