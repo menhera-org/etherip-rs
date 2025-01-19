@@ -165,6 +165,7 @@ impl AsRawFd for RawTap {
 /// There is no need to `split` the `IpSocket` into a reader and a writer,
 /// because it does not need to borrow self mutably to call `recv_from` and `send_to`.
 /// Just wrap it in `Arc` and clone it.
+#[derive(Debug)]
 pub struct Tap {
   inner: AsyncFd<RawTap>,
 }

@@ -46,6 +46,53 @@ async fn load_config<P: AsRef<Path>>(config_path: P) -> Result<config::Config, a
     config::Config::from_path_async(config_path).await
 }
 
+#[derive(Debug, Clone)]
+struct InterfaceState {
+    tap: Arc<tap::Tap>,
+    remote_addr: Arc<RwLock<Option<std::net::IpAddr>>>,
+}
+
+impl InterfaceState {
+    fn new(tap: Arc<tap::Tap>) -> Self {
+        Self {
+            tap,
+            remote_addr: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    #[inline]
+    fn tap(&self) -> Arc<tap::Tap> {
+        self.tap.clone()
+    }
+
+    #[inline]
+    fn remote_addr(&self) -> Option<std::net::IpAddr> {
+        *self.remote_addr.read()
+    }
+
+    #[inline]
+    fn set_remote_addr(&self, remote_addr: std::net::IpAddr) {
+        *self.remote_addr.write() = Some(remote_addr);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RemoteMap {
+    map: Arc<RwLock<HashMap<std::net::IpAddr, Arc<tap::Tap>>>>,
+}
+
+impl RemoteMap {
+    fn new() -> Self {
+        Self {
+            map: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn get(&self, remote_addr: &std::net::IpAddr) -> Option<Arc<tap::Tap>> {
+        self.map.read().get(remote_addr).map(|tap| tap.clone())
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     syslog::init(syslog::Facility::LOG_DAEMON, log::LevelFilter::Info, Some(APP_NAME)).map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -92,7 +139,8 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     });
 
-    let tap_interfaces = RwLock::new(HashMap::new() as HashMap<String, Arc<tap::Tap>>);
+    let interface_states = Arc::new(RwLock::new(HashMap::new() as HashMap<String, InterfaceState>));
+    let remote_map = RemoteMap::new();
     let etherip_socket = EtherIpSocket::new()?;
 
     loop {
@@ -101,33 +149,31 @@ async fn main() -> Result<(), anyhow::Error> {
         log::set_max_level(config.level_filter());
 
         let links = config.links.clone();
-        let mut link_map = config.link_map();
         drop(config);
 
-        let _ = link_map.update().await;
-
         {
-            let mut tap_interfaces = tap_interfaces.write();
-            for (link_name, _link_config) in &links {
-                if !tap_interfaces.contains_key(link_name) {
-                    let tap = tap::Tap::new(link_name)?;
-                    tap_interfaces.insert(link_name.clone(), Arc::new(tap));
+            let mut interface_states = interface_states.write();
+            for (link_name, _) in &links {
+                if !interface_states.contains_key(link_name) {
+                    let tap = Arc::new(tap::Tap::new(link_name)?);
+                    let interface_state = InterfaceState::new(tap);
+                    interface_states.insert(link_name.clone(), interface_state);
                 }
             }
 
-            let to_remove: Vec<String> = tap_interfaces.keys().filter(|link_name| !links.contains_key(*link_name)).cloned().collect();
+            let to_remove: Vec<String> = interface_states.keys().filter(|link_name| !links.contains_key(*link_name)).cloned().collect();
             for link_name in to_remove {
-                tap_interfaces.remove(&link_name);
+                interface_states.remove(&link_name);
                 tap::tap_del_ioctl(&link_name)?;
             }
         }
 
         let mut tasks = Vec::new();
-        for (link_name, link_config) in &links {
+        for (link_name, _) in &links {
+            let interface_state = interface_states.read().get(link_name).unwrap().clone();
             let link_name = link_name.clone();
-            let link_config = link_config.clone();
             let mut kill_receiver = kill_sender.subscribe();
-            let tap = tap_interfaces.read().get(&link_name).unwrap().clone();
+            let tap = interface_state.tap();
             let etherip_socket = etherip_socket.clone();
 
             tasks.push(tokio::spawn(async move {
@@ -135,7 +181,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     _ = kill_receiver.recv() => {
                         log::debug!("TAP receiver {} killed", link_name);
                     },
-                    _ = receive_from_tap(link_name.clone(), link_config, tap, etherip_socket) => {
+                    _ = receive_from_tap(interface_state, tap, etherip_socket) => {
                         log::info!("TAP receiver {} exited", link_name);
                     }
                 }
@@ -144,15 +190,58 @@ async fn main() -> Result<(), anyhow::Error> {
 
         {
             let mut kill_receiver = kill_sender.subscribe();
-            let tap_interfaces = tap_interfaces.read().clone();
+            let remote_map = remote_map.clone();
 
             tasks.push(tokio::spawn(async move {
                 select! {
                     _ = kill_receiver.recv() => {
                         log::debug!("EtherIP socket receiver killed");
                     },
-                    _ = receive_from_etherip_socket(etherip_socket, tap_interfaces, link_map) => {
+                    _ = receive_from_etherip_socket(etherip_socket, remote_map) => {
                         log::info!("EtherIP socket receiver exited");
+                    }
+                }
+            }));
+        }
+
+        {
+            let mut kill_receiver = kill_sender.subscribe();
+            let interface_states = interface_states.clone();
+            let remote_map = remote_map.clone();
+
+            tasks.push(tokio::spawn(async move {
+                select! {
+                    _ = kill_receiver.recv() => {
+                        log::debug!("Remote address refresher killed");
+                    },
+                    _ = async move {
+                        loop {
+                            for link_name in links.keys() {
+                                let link = links.get(link_name).unwrap();
+                                match link.remote_addr().resolve(link.ip_version).await {
+                                    Ok(remote_addr) => {
+                                        let interface_state = interface_states.read().get(link_name).unwrap().clone();
+                                        let old_remote_addr = interface_state.remote_addr();
+                                        if old_remote_addr != Some(remote_addr) {
+                                            interface_state.set_remote_addr(remote_addr);
+                                            let mut map = remote_map.map.write();
+                                            map.insert(remote_addr, interface_state.tap());
+                                            if let Some(old_remote_addr) = old_remote_addr {
+                                                map.remove(&old_remote_addr);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        log::warn!("Failed to resolve remote address for {}: {}", link_name, e);
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        }
+                    } => {
+                        log::info!("Remote address refresher exited");
                     }
                 }
             }));
@@ -167,23 +256,21 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 }
 
-async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, tap: Arc<tap::Tap>, etherip_socket: EtherIpSocket) -> Result<(), anyhow::Error> {
+async fn receive_from_tap(interface_state: InterfaceState, tap: Arc<tap::Tap>, etherip_socket: EtherIpSocket) -> Result<(), anyhow::Error> {
     let mut datagram = unsafe { DefaultBuilder::new() };
-    let mut remote_addr = link_config.remote_addr();
     loop {
-        let _ = remote_addr.update_ip_addr().await;
         {
             let (len, mut buf) = datagram.ethernet_mut();
             *len = match tap.read(&mut buf).await {
                 Ok(len) => len,
                 Err(e) => {
-                    log::warn!("Failed to read from TAP interface {}: {}", link_name, e);
+                    log::warn!("Failed to read from TAP interface: {}", e);
                     continue;
                 }
             };
         }
 
-        if let Some(remote_addr) = remote_addr.try_get_ip_addr() {
+        if let Some(remote_addr) = interface_state.remote_addr() {
             let _ = etherip_socket.send_to(&datagram, remote_addr).await;
         } else {
             log::debug!("Sending a packet to an unknown remote address");
@@ -192,11 +279,9 @@ async fn receive_from_tap(link_name: String, link_config: config::LinkConfig, ta
     }
 }
 
-async fn receive_from_etherip_socket(etherip_socket: EtherIpSocket, tap_interfaces: HashMap<String, Arc<tap::Tap>>, mut link_map: config::AddrStringMap<String>) -> Result<(), anyhow::Error> {
+async fn receive_from_etherip_socket(etherip_socket: EtherIpSocket, remote_map: RemoteMap) -> Result<(), anyhow::Error> {
     let mut datagram = unsafe { DefaultParser::new() };
     loop {
-        let _ = link_map.update().await;
-
         let src = match etherip_socket.recv_from(&mut datagram).await {
             Ok(src) => src,
             Err(e) => {
@@ -212,9 +297,8 @@ async fn receive_from_etherip_socket(etherip_socket: EtherIpSocket, tap_interfac
             continue;
         };
 
-        match link_map.get(&src) {
-            Some(link_name) => {
-                let tap = tap_interfaces.get(link_name).ok_or_else(|| anyhow::anyhow!("Link {} does not exist", link_name))?;
+        match remote_map.get(&src) {
+            Some(tap) => {
                 let _ = tap.write(eth_frame).await;
             },
             None => {
