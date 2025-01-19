@@ -62,7 +62,7 @@ impl<const N: usize> EtherIpParser<N> {
             return None;
         }
         let len = self.datagram_length;
-        if len <= N && len >= ETHERIP_MAX_DATAGRAM_SIZE {
+        if len <= N && len >= ETHERIP_MIN_DATAGRAM_SIZE {
             Some(&self.data[2..len])
         } else {
             None
